@@ -217,8 +217,8 @@ internal sealed class Program
             var server = new NamedPipeServerStream(
                 pipeName,
                 PipeDirection.InOut,
-                1,
-                PipeTransmissionMode.Message,
+                NamedPipeServerStream.MaxAllowedServerInstances,
+                PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
 
             try
@@ -227,7 +227,20 @@ internal sealed class Program
                 await server.WaitForConnectionAsync();
 
                 var client = new PipeClientConnection(pipeName, server);
-                Clients[pipeName] = client;
+
+                Clients.AddOrUpdate(
+                    pipeName,
+                    client,
+                    (_, oldClient) =>
+                    {
+                        try
+                        {
+                            oldClient.Dispose();
+                        }
+                        catch { }
+
+                        return client;
+                    });
 
                 Console.WriteLine($"[Pipe] 클라이언트 연결됨: {pipeName}");
 
@@ -239,7 +252,11 @@ internal sealed class Program
                     }
                     finally
                     {
-                        Clients.TryRemove(pipeName, out _);
+                        if (Clients.TryGetValue(pipeName, out var current) && ReferenceEquals(current, client))
+                        {
+                            Clients.TryRemove(pipeName, out _);
+                        }
+
                         client.Dispose();
                         Console.WriteLine($"[Pipe] 클라이언트 연결 해제: {pipeName}");
                     }
@@ -261,8 +278,8 @@ internal sealed class Program
             var server = new NamedPipeServerStream(
                 ControlPipeName,
                 PipeDirection.InOut,
-                1,
-                PipeTransmissionMode.Message,
+                NamedPipeServerStream.MaxAllowedServerInstances,
+                PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
 
             try
@@ -333,6 +350,11 @@ internal sealed class Program
             }
         }
     }
+    internal static void SetActiveProgramFromClient(TargetProgram target, string source)
+    {
+        SetActiveProgram(target, source);
+    }
+
 }
 
 internal sealed class PipeClientConnection : IDisposable
@@ -388,8 +410,19 @@ internal sealed class PipeClientConnection : IDisposable
 
             Console.WriteLine($"[PipeRecv] {target}: {line}");
 
-            // 나중에 클라이언트가 직접 활성 통지 보내는 용도로 확장 가능
-            // 예: ProgramA 파이프에서 "ACTIVE" 수신 시 ProgramA 활성화
+            if (line.Equals("ACTIVE:ProgramA", StringComparison.OrdinalIgnoreCase))
+            {
+                Program.SetActiveProgramFromClient(TargetProgram.ProgramA, $"DataPipe:{target}");
+                continue;
+            }
+
+            if (line.Equals("ACTIVE:ProgramB", StringComparison.OrdinalIgnoreCase))
+            {
+                Program.SetActiveProgramFromClient(TargetProgram.ProgramB, $"DataPipe:{target}");
+                continue;
+            }
+
+            // HELLO나 기타 메시지는 그냥 로그만
         }
     }
 
